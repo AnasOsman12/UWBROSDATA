@@ -1,0 +1,87 @@
+#!/usr/bin/env python3
+
+import os
+import glob
+import pandas as pd
+import numpy as np
+import math
+import shutil
+
+# Define input directory and subfolders
+data_dir = "/Users/anasosman/downloads/test2/t"
+sub_folders = [folder for folder in os.listdir(data_dir) if not folder.startswith('.DS_Store')]
+cohda_aligned_dir = "cohda_aligned"
+gps_aligned_dir = "gps_aligned"
+gps_cad_file = "/Users/anasosman/Downloads/test2/cohda_cad.csv"
+
+# Function to calculate missing points between two rows
+def insert_missing_points(z, k, diff):
+    new_time = np.linspace(z.time_stamps[k], z.time_stamps[k+1], diff+1, endpoint=True)
+    px = np.linspace(z.x[k], z.x[k+1], diff+1, endpoint=True)
+    py = np.linspace(z.y[k], z.y[k+1], diff+1, endpoint=True)
+    return pd.DataFrame({"time_stamps": new_time[:diff], "x": px[:diff], "y": py[:diff]})
+
+# Function for time alignment
+def time_alignment(b, z):
+    mask = b.time_stamps.isin(z.time_stamps)
+    df2 = b[mask]
+    y = pd.DataFrame({"time_stamps": df2.time_stamps, "x": df2.x, "y": df2.y})
+    y.reset_index(drop=True, inplace=True)
+    return y
+
+# Main loop for processing CSV files
+for folder in sub_folders:
+    path = os.path.join(data_dir, folder)
+    os.chdir(path)
+    path2 = os.path.join(path, gps_aligned_dir)
+    path3 = os.path.join(path, cohda_aligned_dir)
+
+    if os.path.exists(path2):
+        shutil.rmtree(path2)
+    os.mkdir(path2)
+
+    if os.path.exists(path3):
+        shutil.rmtree(path3)
+    os.mkdir(path3)
+
+    csv_files = glob.glob(os.path.join(path, "*.csv")
+
+    for csv_file in csv_files:
+        print(f"Processing file: {csv_file}")
+        UWB = pd.read_csv(csv_file)
+        GPS = pd.read_csv(gps_cad_file)
+
+        a = UWB
+        b = GPS
+
+        a['time_stamps'] = (UWB.time_stamps / 10**8)
+        b['time_stamps'] = (GPS.time_stamps / 10**5).astype(int)
+
+        a.reset_index(drop=True, inplace=True)
+        b.reset_index(drop=True, inplace=True)
+
+        s = a.round(2)
+        b = b.round(2)
+
+        z = align(s)
+
+        new_uwb = pd.DataFrame(columns=["time_stamps", "x", "y"])
+
+        for k in range(len(z.index)-1):
+            diff = z.time_stamps.loc[k+1] - z.time_stamps.loc[k]
+
+            if diff <= 1:
+                new_uwb.loc[len(new_uwb.index)] = z.loc[k]
+            else:
+                print("Number of Missing points", diff-1)
+                rows = insert_missing_points(z, k, diff)
+                new_uwb = pd.concat([new_uwb, rows])
+                new_uwb.reset_index(drop=True, inplace=True)
+
+        new_uwb.to_csv(f"{csv_file[:csv_file.rfind('.csv')}_gps.csv")
+        shutil.move(f"{csv_file[:csv_file.rfind('.csv')}_gps.csv", path2)
+        print("Length Differences: ", len(new_uwb.x) - len(UWB.x))
+
+        l = time_alignment(b, new_uwb)
+        l.to_csv(f"{csv_file[:csv_file.rfind('.csv')}_cohda.csv")
+        shutil.move(f"{csv_file[:csv_file.rfind('.csv')}_cohda.csv", path3)

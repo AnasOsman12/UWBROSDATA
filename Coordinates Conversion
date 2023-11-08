@@ -1,0 +1,142 @@
+#!/usr/bin/env python3
+
+import numpy as np
+import pandas as pd
+import os
+import glob
+import shutil
+
+# Global Constants
+TERRACE_REFERENCE_POINTS = {
+    "Lat1": 46.0677393,
+    "Lon1": 11.15091824,
+    "Lat2": 46.06762059,
+    "Lon2": 11.15071904,
+    "Lat3": 46.06799005,
+    "Lon3": 11.15072119
+}
+
+GARAGE_REFERENCE_POINTS = {
+    "Lat1": 46.06755685,
+    "Lon1": 11.15094179,
+    "Lat2": 46.06744994,
+    "Lon2": 11.1516506,
+    "Lat3": 46.06803331,
+    "Lon3": 11.15160491
+}
+
+UWB_PATH = 0  # Update the paths
+GPS_PATH = 0  # Update the paths
+
+# Function to Calculate Distance between Lat/Lon points
+def calculate_distance(lat1, lon1, lat2, lon2):
+    earth_radius = 6371.0  # Earth's radius in kilometers
+    lat1_rad = np.radians(lat1)
+    lon1_rad = np.radians(lon1)
+    lat2_rad = np.radians(lat2)
+    lon2_rad = np.radians(lon2)
+
+    dlon = lon2_rad - lon1_rad
+    dlat = lat2_rad - lat1_rad
+
+    a = np.sin(dlat/2)**2 + np.cos(lat1_rad) * np.cos(lat2_rad) * np.sin(dlon/2)**2
+    c = 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
+
+    distance = earth_radius * c * 1000  # Convert to meters
+    return distance
+
+# Function to Calculate XY Distance between two points
+def calculate_xy_distance(x1, y1, x2, y2):
+    return np.sqrt((x1 - x2)**2 + (y1 - y2)**2)
+
+# Function for Trilateration in XY coordinates
+def trilaterate(x1, y1, x2, y2, x3, y3, r1, r2, r3, timestamp):
+    A = 2 * (x2 - x1)
+    B = 2 * (y2 - y1)
+    C = r1**2 - r2**2 - x1**2 + x2**2 - y1**2 + y2**2
+    D = 2 * (x3 - x2)
+    E = 2 * (y3 - y2)
+    F = r2**2 - r3**2 - x2**2 + x3**2 - y2**2 + y3**2
+
+    x = (C * E - F * B) / (E * A - B * D)
+    y = (C * D - A * F) / (B * D - A * E)
+    
+    return {
+        'time_stamps': timestamp,
+        'x': round(x, 4),
+        'y': round(y, 4),
+        'z': 0  # for CAD conversion
+    }
+
+# Function to Convert CSV Files to CAD format
+def convert_to_cad(file_path, conversion_type):
+    # Reference points for CAD conversion
+    x1_ref, y1_ref, x2_ref, y2_ref, x3_ref, y3_ref = 0, 0, 0, 0, 0, 0
+
+    if conversion_type == "uwb":
+        reference_points = GARAGE_REFERENCE_POINTS if "Garage" in file_path else TERRACE_REFERENCE_POINTS
+        x1_ref, y1_ref = reference_points["Lat1"], reference_points["Lon1"]
+        x2_ref, y2_ref = reference_points["Lat2"], reference_points["Lon2"]
+        x3_ref, y3_ref = reference_points["Lat3"], reference_points["Lon3"]
+    
+    data_dir = file_path
+    sub_folders = os.listdir(data_dir)
+    sub_folders.remove('.DS_Store')  # Remove macOS system file
+    for folder in sub_folders:
+        folder_path = os.path.join(data_dir, folder)
+        os.chdir(folder_path)
+        csv_files = glob.glob(os.path.join(folder_path, "*.csv")
+
+        # Create directories for CAD conversion and AutoCAD scripts
+        output_directory = os.path.join(folder_path, f"{folder}_{conversion_type}_cad")
+        autocad_script_directory = os.path.join(output_directory, "uwb_AutoCAD_script")
+        uwb_offset_directory = os.path.join(folder_path, "uwb_offset")
+
+        for directory in [output_directory, autocad_script_directory, uwb_offset_directory]:
+            if os.path.exists(directory):
+                shutil.rmtree(directory)
+            os.mkdir(directory)
+
+        for csv_file in csv_files:
+            filename = csv_file[:csv_file.rfind('.csv')]
+            if conversion_type == "uwb":
+                # Execute an offset script to modify the CSV file
+                os.system(f"/Library/Frameworks/R.framework/Versions/4.0/Resources/Rscript /Users/anasosman/Downloads/offset.r {csv_file} {filename}_offset.csv")
+                data = pd.read_csv(f"{filename}_offset.csv")
+                shutil.move(f"{filename}_offset.csv", uwb_offset_directory)
+                
+                uwb_data = pd.DataFrame(trilaterate(
+                    calculate_xy_distance(x1_ref, y1_ref, data["x"], data["y"]),
+                    calculate_xy_distance(x2_ref, y2_ref, data["x"], data["y"]),
+                    calculate_xy_distance(x3_ref, y3_ref, data["x"], data["y"]),
+                    data["rosbagTimestamp"]
+                ))
+                uwb_data.reset_index(drop=True, inplace=True)
+                uwb_data.to_csv(f"{filename}_cad.csv")
+                shutil.move(f"{filename}_cad.csv", output_directory)
+
+                # Create AutoCAD script file
+                with open(f"{filename}_cad.scr", "w") as script_file:
+                    content = "\n".join(uwb_data['AutoCAD Format'])
+                    script_file.write(f"_MULTIPLE _POINT\n{content}")
+                    shutil.move(f"{filename}_cad.scr", autocad_script_directory)
+
+            elif conversion_type == "gps":
+                gps_data = pd.read_csv(csv_file, usecols=['lat', 'lon', 'time_us'])
+                gps_cad_data = pd.DataFrame(trilaterate(
+                    calculate_distance(Lat1, Lon1, gps_data["lat"], gps_data["lon"]),
+                    calculate_distance(Lat2, Lon2, gps_data["lat"], gps_data["lon"]),
+                    calculate_distance(Lat3, Lon3, gps_data["lat"], gps_data["lon"]),
+                    gps_data["time_us"]
+                ))
+                gps_cad_data.reset_index(drop=True, inplace=True)
+                gps_cad_data.to_csv(f"{filename}_cad.csv")
+                shutil.move(f"{filename}_cad.csv", output_directory)
+
+# Function to Convert UWB and GPS Data to CAD Format
+def conversion(data_path, conversion_type):
+    convert_to_cad(data_path, conversion_type)
+
+if __name__ == "__main__":
+    conversion(UWB_PATH, "uwb")
+    conversion(GPS_PATH, "gps")
